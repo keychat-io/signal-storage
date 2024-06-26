@@ -1,0 +1,9 @@
+/target
+*.log
+*.swp
+.DS_Store
+.atom/
+.buildlog/
+.history
+.svn/
+.idea/
