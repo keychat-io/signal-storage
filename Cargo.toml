@@ -1,0 +1,24 @@
+[package]
+name = "signal-store"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[dependencies]
+libsignal-protocol = {git = "https://github.com/key-chat/libsignal.git", branch = "kc"}
+async-trait = "0.1.41"
+uuid = "1.1.2"
+anyhow = "1.0.57"
+hex = "0.4.3"
+lazy_static = "1.4.0"
+log = "0.4.17"
+rand = "0.8"
+serde = {version = "1.0.163", features = ["derive"]}
+serde_json = "1.0.96"
+thiserror = "1.0.40"
+futures = "0.3"
+sqlx = {version = "0.7.1", features = ["runtime-tokio", "sqlite"]}
+tokio = {version = "1.28.1", features = ["sync", "rt", "macros"]}
+futures-util = "0.3"
+clap = {version = "4.4", features = ["derive"]}
+strum = {version = "0.25", features = ["derive"]}
