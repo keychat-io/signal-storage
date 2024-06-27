@@ -1,4 +1,3 @@
-// Copyright 2020-2022 Signal Messenger, LLC.
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Implementations for stores defined in [super::traits].
 
