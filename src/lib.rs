@@ -1294,11 +1294,20 @@ impl KeyChatPreKeyStore {
 
     /// remove pre_key
     async fn remove_pre_key(&mut self, key_id: PreKeyId) -> Result<()> {
+        // let sql = format!(
+        //     "delete from {} where keyId = ?",
+        //     self.pool.definition_pre_key()
+        // );
+        // let result = sqlx::query(&sql)
+        //     .bind(key_id.to_string())
+        //     .execute(&self.pool.db)
+        //     .await
+        //     .expect("execute remove_pre_key sql error");
+
         let sql = format!(
-            "delete from {} where keyId = ?",
+            "update {} set used = true where keyId = ?",
             self.pool.definition_pre_key()
         );
-
         let result = sqlx::query(&sql)
             .bind(key_id.to_string())
             .execute(&self.pool.db)
@@ -1306,7 +1315,7 @@ impl KeyChatPreKeyStore {
             .expect("execute remove_pre_key sql error");
         let cnt = result.rows_affected();
         if cnt > 0 {
-            info!("delete {} old pre_key records", cnt);
+            info!("update {} old pre_key records used", cnt);
         }
         Ok(())
     }
