@@ -574,10 +574,6 @@ impl KeyChatSessionStore {
             sqlx::query(&sql)
                 .bind(address.name())
                 .bind(address.device_id().to_string())
-                // .bind(format!(
-                //     "{:?}",
-                //     record.serialize().expect("record serialize error")
-                // ))
                 .bind(hex::encode(
                     record.serialize().expect("record serialize error"),
                 ))
@@ -590,10 +586,6 @@ impl KeyChatSessionStore {
             sqlx::query(&sql)
                 .bind(address.name())
                 .bind(address.device_id().to_string())
-                // .bind(format!(
-                //     "{:?}",
-                //     record.serialize().expect("record serialize error")
-                // ))
                 .bind(hex::encode(
                     record.serialize().expect("record serialize error"),
                 ))
@@ -608,10 +600,6 @@ impl KeyChatSessionStore {
             sqlx::query(&sql)
                 .bind(address.name())
                 .bind(address.device_id().to_string())
-                // .bind(format!(
-                //     "{:?}",
-                //     record.serialize().expect("record serialize error")
-                // ))
                 .bind(hex::encode(
                     record.serialize().expect("record serialize error"),
                 ))
@@ -1162,8 +1150,12 @@ impl KeyChatSignedPreKeyStore {
     }
 
     pub async fn remove_signed_pre_key(&mut self, key_id: SignedPreKeyId) -> Result<()> {
+        // let sql = format!(
+        //     "delete from {} where keyId = ?",
+        //     self.pool.definition_signed_key()
+        // );
         let sql = format!(
-            "delete from {} where keyId = ?",
+            "update {} set used = true where keyId = ?",
             self.pool.definition_signed_key()
         );
         let result = sqlx::query(&sql)
@@ -1200,8 +1192,8 @@ impl KeyChatSignedPreKeyStore {
         &mut self,
         signal_identity_private_key: PrivateKey,
     ) -> Result<(u32, PublicKey, Vec<u8>)> {
-        // first del over 24H data
-        self.del_over24h_signed_pre_key().await?;
+        // first del over 24*3h data
+        self.delete_old_signed_pre_key().await?;
         let bob_sign_id = random::<u32>();
         let mut csprng = OsRng;
         let pair = KeyPair::generate(&mut csprng);
@@ -1223,19 +1215,19 @@ impl KeyChatSignedPreKeyStore {
         Ok((bob_sign_id, pair.public_key, bob_signed_signature.to_vec()))
     }
 
-    /// del over 24h signed_key
-    pub async fn del_over24h_signed_pre_key(&mut self) -> Result<()> {
+    /// del over 24*3h signed_key
+    pub async fn delete_old_signed_pre_key(&mut self) -> Result<()> {
         let sql = format!(
-            "delete from {} where createdAt >= datetime('now', '-1 day')",
+            "delete from {} where createdAt <= datetime('now', '-1 day')",
             self.pool.definition_signed_key()
         );
         let result = sqlx::query(&sql)
             .execute(&self.pool.db)
             .await
-            .expect("execute del_over24h_signed_pre_key sql error");
+            .expect("execute delete_old_signed_pre_key sql error");
         let cnt = result.rows_affected();
         if cnt > 0 {
-            info!("delete {} old del_over24h_signed_pre_key records", cnt);
+            info!("delete {} old delete_old_signed_pre_key records", cnt);
         }
         Ok(())
     }
@@ -1298,12 +1290,6 @@ impl KeyChatPreKeyStore {
         //     "delete from {} where keyId = ?",
         //     self.pool.definition_pre_key()
         // );
-        // let result = sqlx::query(&sql)
-        //     .bind(key_id.to_string())
-        //     .execute(&self.pool.db)
-        //     .await
-        //     .expect("execute remove_pre_key sql error");
-
         let sql = format!(
             "update {} set used = true where keyId = ?",
             self.pool.definition_pre_key()
@@ -1337,16 +1323,16 @@ impl KeyChatPreKeyStore {
         Ok(key_ids)
     }
 
-    /// del over 24h pre_key
-    pub async fn del_over24h_pre_key(&mut self) -> Result<()> {
+    /// del over 24*3h pre_key
+    pub async fn delete_old_pre_key(&mut self) -> Result<()> {
         let sql = format!(
-            "delete from {} where createdAt >= datetime('now', '-1 day')",
+            "delete from {} where createdAt <= datetime('now', '-1 day')",
             self.pool.definition_pre_key()
         );
         let result = sqlx::query(&sql)
             .execute(&self.pool.db)
             .await
-            .expect("execute del_over24h_pre_key sql error");
+            .expect("execute delete_old_pre_key sql error");
         let cnt = result.rows_affected();
         if cnt > 0 {
             info!("delete {} old pre_key records", cnt);
@@ -1355,8 +1341,8 @@ impl KeyChatPreKeyStore {
     }
 
     pub async fn generate_pre_key(&mut self) -> Result<(u32, PublicKey)> {
-        // first del over 24H data
-        self.del_over24h_pre_key().await?;
+        // first del over 24*3 data
+        self.delete_old_pre_key().await?;
         let prekey_id = random::<u32>();
         let mut csprng = OsRng;
         let pair = KeyPair::generate(&mut csprng);
