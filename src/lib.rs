@@ -1191,7 +1191,7 @@ impl KeyChatSignedPreKeyStore {
     pub async fn generate_signed_key(
         &mut self,
         signal_identity_private_key: PrivateKey,
-    ) -> Result<(u32, PublicKey, Vec<u8>)> {
+    ) -> Result<(u32, PublicKey, Vec<u8>, Vec<u8>)> {
         // first del over 24*3h data
         self.delete_old_signed_pre_key().await?;
         let bob_sign_id = random::<u32>();
@@ -1212,7 +1212,7 @@ impl KeyChatSignedPreKeyStore {
         );
         self.save_signed_pre_key(bob_sign_id.into(), &record)
             .await?;
-        Ok((bob_sign_id, pair.public_key, bob_signed_signature.to_vec()))
+        Ok((bob_sign_id, pair.public_key, bob_signed_signature.to_vec(), record.serialize()?))
     }
 
     /// del over 24*3h signed_key
@@ -1340,7 +1340,7 @@ impl KeyChatPreKeyStore {
         Ok(())
     }
 
-    pub async fn generate_pre_key(&mut self) -> Result<(u32, PublicKey)> {
+    pub async fn generate_pre_key(&mut self) -> Result<(u32, PublicKey, Vec<u8>)> {
         // first del over 24*3 data
         self.delete_old_pre_key().await?;
         let prekey_id = random::<u32>();
@@ -1348,7 +1348,7 @@ impl KeyChatPreKeyStore {
         let pair = KeyPair::generate(&mut csprng);
         let record = PreKeyRecord::new(prekey_id.into(), &pair);
         self.save_pre_key(prekey_id.into(), &record).await?;
-        Ok((prekey_id, pair.public_key))
+        Ok((prekey_id, pair.public_key, record.serialize()?))
     }
 }
 
