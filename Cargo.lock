@@ -873,7 +873,7 @@ checksum = "4ec2a862134d2a7d32d7983ddcdd1c4923530833c9f2ea1a44fc5fa473989058"
 [[package]]
 name = "libsignal-core"
 version = "0.1.0"
-source = "git+https://github.com/keychat-io/libsignal.git?branch=kdf#d39af6761049f3babadeb918eadc312ce60c8347"
+source = "git+https://github.com/keychat-io/libsignal.git?branch=kc#274c112befcb2760b82eaaec57b1b54c2adb1440"
 dependencies = [
  "num_enum",
  "uuid",
@@ -882,7 +882,7 @@ dependencies = [
 [[package]]
 name = "libsignal-protocol"
 version = "0.1.0"
-source = "git+https://github.com/keychat-io/libsignal.git?branch=kdf#d39af6761049f3babadeb918eadc312ce60c8347"
+source = "git+https://github.com/keychat-io/libsignal.git?branch=kc#274c112befcb2760b82eaaec57b1b54c2adb1440"
 dependencies = [
  "aes",
  "aes-gcm-siv",
@@ -1564,7 +1564,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 [[package]]
 name = "signal-crypto"
 version = "0.1.0"
-source = "git+https://github.com/keychat-io/libsignal.git?branch=kdf#d39af6761049f3babadeb918eadc312ce60c8347"
+source = "git+https://github.com/keychat-io/libsignal.git?branch=kc#274c112befcb2760b82eaaec57b1b54c2adb1440"
 dependencies = [
  "aes",
  "cbc",
