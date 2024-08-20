@@ -11,6 +11,7 @@ use rand::random;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::result;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub type Result<T> = std::result::Result<T, SignalProtocolError>;
@@ -739,7 +740,7 @@ impl KeyChatSessionStore {
         }
     }
 
-    pub async fn delete_session(&self, address: &ProtocolAddress) -> Result<()> {
+    pub async fn delete_session(&self, address: &ProtocolAddress) -> Result<bool> {
         let name = address.name();
         let device_id = &address.device_id().to_string();
         let session = self.get_session(name, device_id).await?;
@@ -748,14 +749,20 @@ impl KeyChatSessionStore {
                 "delete from {} where address = ? and device = ?",
                 self.pool.definition_session()
             );
-            sqlx::query(&sql)
+            let result = sqlx::query(&sql)
                 .bind(name)
                 .bind(device_id)
                 .execute(&self.pool.db)
                 .await
                 .expect("execute delete_session sql error");
+            let cnt = result.rows_affected();
+            if cnt > 0 {
+                return Ok(true);
+            } else {
+                return Ok(false);
+            }
         }
-        Ok(())
+        Ok(false)
     }
 
     pub async fn delete_session_by_device_id(&self, device_id: u32) -> Result<bool> {
@@ -1212,7 +1219,12 @@ impl KeyChatSignedPreKeyStore {
         );
         self.save_signed_pre_key(bob_sign_id.into(), &record)
             .await?;
-        Ok((bob_sign_id, pair.public_key, bob_signed_signature.to_vec(), record.serialize()?))
+        Ok((
+            bob_sign_id,
+            pair.public_key,
+            bob_signed_signature.to_vec(),
+            record.serialize()?,
+        ))
     }
 
     /// del over 24*3h signed_key
