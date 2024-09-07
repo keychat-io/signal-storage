@@ -11,9 +11,7 @@ use rand::random;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::result;
 use std::time::{SystemTime, UNIX_EPOCH};
-
 pub type Result<T> = std::result::Result<T, SignalProtocolError>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,8 +80,7 @@ impl LitePool {
     /// https://docs.rs/sqlx-sqlite/0.7.1/sqlx_sqlite/struct.SqliteConnectOptions.html#impl-FromStr-for-SqliteConnectOptions
     pub async fn open(dbpath: &str, tables: Tables) -> anyhow::Result<LitePool> {
         let opts = dbpath
-            .parse::<SqliteConnectOptions>()
-            .expect("error in dbpath parse")
+            .parse::<SqliteConnectOptions>()?
             .create_if_missing(true)
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
             // prevent other thread open it
@@ -95,8 +92,7 @@ impl LitePool {
         let db = sqlx::sqlite::SqlitePoolOptions::new()
             // .max_connections(1)
             .connect_with(opts)
-            .await
-            .expect("error in connect_with");
+            .await?;
 
         Self::new(db, tables).await
     }
@@ -209,16 +205,24 @@ impl KeyChatIdentityKeyStore {
             .bind(device_id)
             .fetch_optional(&self.pool.db)
             .await
-            .expect("execute get_identity_by_address sql error");
+            .map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("get_identity_by_address execute: {}", e).to_string(),
+                )
+            })?;
         if identity.is_none() {
             return Ok(None);
         }
-        let row = identity.expect("get identity error");
+        let row = identity.unwrap();
         let info = SignalIdentitie {
             next_prekey_id: row.get(0),
             registration_id: row.get(1),
             address: row.get(2),
-            device: u32::try_from(row.get::<'_, i64, _>(3)).expect("get device error"),
+            device: u32::try_from(row.get::<'_, i64, _>(3)).map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("get device from identity: {}", e).to_string(),
+                )
+            })?,
             private_key: row.get(4),
             public_key: row.get(5),
         };
@@ -231,8 +235,16 @@ impl KeyChatIdentityKeyStore {
         public_key: &str,
         private_key: &str,
     ) -> Result<IdentityKeyPair> {
-        let public_key_vec = decode_str_to_bytes(public_key).expect("decode public key error");
-        let private_key_vec = decode_str_to_bytes(private_key).expect("decode private key error");
+        let public_key_vec = decode_str_to_bytes(public_key).map_err(|e| {
+            SignalProtocolError::InvalidArgument(
+                format_err!("decode public key error: {}", e).to_string(),
+            )
+        })?;
+        let private_key_vec = decode_str_to_bytes(private_key).map_err(|e| {
+            SignalProtocolError::InvalidArgument(
+                format_err!("decode private key error: {}", e).to_string(),
+            )
+        })?;
         let identity = IdentityKey::decode(&public_key_vec)?;
         let private_key = PrivateKey::deserialize(&private_key_vec)?;
         let id_key_pair = IdentityKeyPair::new(identity, private_key);
@@ -244,15 +256,18 @@ impl KeyChatIdentityKeyStore {
         address: &str,
         device_id: &str,
     ) -> Result<IdentityKeyPair> {
-        let identity = self.get_identity_by_address(address, device_id).await?;
-        let identity = identity.expect("get identity error");
-        let id_key_pair = self.get_identity_key_pair_keys(
-            &identity.public_key,
-            &identity
-                .private_key
-                .expect("get private key from identity error"),
-        )?;
-        Ok(id_key_pair)
+        let identity = self
+            .get_identity_by_address(address, device_id)
+            .await?
+            .ok_or_else(|| {
+                SignalProtocolError::InvalidArgument("identity not found".to_string())
+            })?;
+
+        let private_key = identity.private_key.ok_or_else(|| {
+            SignalProtocolError::InvalidArgument("private_key not found".to_string())
+        })?;
+
+        self.get_identity_key_pair_keys(&identity.public_key, &private_key)
     }
 
     pub async fn get_local_registration_id_bak(
@@ -262,9 +277,11 @@ impl KeyChatIdentityKeyStore {
     ) -> Result<u32> {
         let identity = self.get_identity_by_address(address, device_id).await?;
         let registration_id = identity
-            .expect("get identity error")
+            .ok_or_else(|| SignalProtocolError::InvalidArgument("Identity not found".to_string()))?
             .registration_id
-            .expect("get registration id from identity error");
+            .ok_or_else(|| {
+                SignalProtocolError::InvalidArgument("Registration ID not found".to_string())
+            })?;
         Ok(registration_id)
     }
 
@@ -280,7 +297,11 @@ impl KeyChatIdentityKeyStore {
             .bind(identity.public_key)
             .execute(&self.pool.db)
             .await
-            .expect("execute insert_identity sql error");
+            .map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute insert_identity error: {}", e).to_string(),
+                )
+            })?;
 
         Ok(())
     }
@@ -311,8 +332,11 @@ impl KeyChatIdentityKeyStore {
     }
 
     pub fn get_identity_public_key(&self, public_key: &str) -> Result<IdentityKey> {
-        let public_key_vec: Vec<u8> =
-            decode_str_to_bytes(public_key).expect("serde public key error");
+        let public_key_vec: Vec<u8> = decode_str_to_bytes(public_key).map_err(|e| {
+            SignalProtocolError::InvalidArgument(
+                format_err!("serde public key error: {}", e).to_string(),
+            )
+        })?;
         let identity = IdentityKey::decode(&public_key_vec)?;
         Ok(identity)
     }
@@ -326,7 +350,11 @@ impl KeyChatIdentityKeyStore {
             .bind(address)
             .execute(&self.pool.db)
             .await
-            .expect("execute delete_identity sql error");
+            .map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute delete_identity error: {}", e).to_string(),
+                )
+            })?;
         let cnt = result.rows_affected();
         if cnt > 0 {
             Ok(true)
@@ -373,16 +401,22 @@ impl IdentityKeyStore for KeyChatIdentityKeyStore {
         if self.get_identity_public_key(
             &signal_identity
                 .as_ref()
-                .expect("get identity to public key error")
+                .ok_or_else(|| {
+                    SignalProtocolError::InvalidArgument("signal_identity not found".to_string())
+                })?
                 .public_key,
         )? != *identity
         {
             signal_identity
                 .as_mut()
-                .expect("signal_identity as mut error")
+                .ok_or_else(|| {
+                    SignalProtocolError::InvalidArgument("signal_identity not found".to_string())
+                })?
                 .public_key = hex::encode(identity.serialize());
-            self.insert_identity(signal_identity.expect("get signal_identity error"))
-                .await?;
+            self.insert_identity(signal_identity.ok_or_else(|| {
+                SignalProtocolError::InvalidArgument("signal_identity not found".to_string())
+            })?)
+            .await?;
             return Ok(true);
         }
         // same key
@@ -409,7 +443,11 @@ impl IdentityKeyStore for KeyChatIdentityKeyStore {
                     != self.get_identity_public_key(
                         &signal_identity
                             .as_ref()
-                            .expect("get identity to public key error")
+                            .ok_or_else(|| {
+                                SignalProtocolError::InvalidArgument(
+                                    "signal_identity not found".to_string(),
+                                )
+                            })?
                             .public_key,
                     )?
                 {
@@ -432,7 +470,9 @@ impl IdentityKeyStore for KeyChatIdentityKeyStore {
         }
         let id_key = self.get_identity_public_key(
             &identity
-                .expect("get identity to public key error")
+                .ok_or_else(|| {
+                    SignalProtocolError::InvalidArgument("identity not found".to_string())
+                })?
                 .public_key,
         )?;
         Ok(Some(id_key))
@@ -471,8 +511,13 @@ impl KeyChatSessionStore {
             .await?;
             return Ok((0, alice_addrs_pre));
         }
-        let record_to_str = hex::encode(record.serialize().expect("record serialize error"));
-        let ss = session.as_mut().expect("session as mut error");
+        let record_to_str =
+            hex::encode(record.serialize().map_err(|_| {
+                SignalProtocolError::InvalidArgument("record not found".to_string())
+            })?);
+        let ss = session
+            .as_mut()
+            .ok_or_else(|| SignalProtocolError::InvalidArgument("session not found".to_string()))?;
         if ss.record == record_to_str {
             return Ok((1, alice_addrs_pre));
         }
@@ -484,12 +529,20 @@ impl KeyChatSessionStore {
             {
                 ss.bob_address = Some(
                     to_receiver_address
-                        .expect("get to_receiver_address error")
+                        .ok_or_else(|| {
+                            SignalProtocolError::InvalidArgument(
+                                "to_receiver_address not found".to_string(),
+                            )
+                        })?
                         .to_string(),
                 );
                 ss.bob_sender_ratchet_key = Some(
                     sender_ratchet_key
-                        .expect("get sender_ratchet_key error")
+                        .ok_or_else(|| {
+                            SignalProtocolError::InvalidArgument(
+                                "sender_ratchet_key not found".to_string(),
+                            )
+                        })?
                         .to_string(),
                 );
                 flag = 2;
@@ -500,27 +553,42 @@ impl KeyChatSessionStore {
             if ss.alice_addresses.is_none() {
                 ss.alice_sender_ratchet_key = Some(
                     sender_ratchet_key
-                        .expect("get sender_ratchet_key error")
+                        .ok_or_else(|| {
+                            SignalProtocolError::InvalidArgument(
+                                "sender_ratchet_key not found".to_string(),
+                            )
+                        })?
                         .to_string(),
                 );
                 ss.alice_addresses = Some(
                     my_receiver_address
-                        .expect("get my_receiver_address error")
+                        .ok_or_else(|| {
+                            SignalProtocolError::InvalidArgument(
+                                "my_receiver_address not found".to_string(),
+                            )
+                        })?
                         .to_string(),
                 );
                 flag = 3;
             } else if sender_ratchet_key != ss.alice_sender_ratchet_key.as_deref() {
                 ss.alice_sender_ratchet_key = Some(
                     sender_ratchet_key
-                        .expect("get sender_ratchet_key error")
+                        .ok_or_else(|| {
+                            SignalProtocolError::InvalidArgument(
+                                "sender_ratchet_key not found".to_string(),
+                            )
+                        })?
                         .to_string(),
                 );
-                let alice_addresses2 = ss
-                    .alice_addresses
-                    .as_ref()
-                    .expect("alice_addresses as ref error");
+                let alice_addresses2 = ss.alice_addresses.as_ref().ok_or_else(|| {
+                    SignalProtocolError::InvalidArgument("alice_addresses not found".to_string())
+                })?;
                 let mut list: Vec<&str> = alice_addresses2.split(',').collect();
-                list.push(my_receiver_address.expect("get my_receiver_address error"));
+                list.push(my_receiver_address.ok_or_else(|| {
+                    SignalProtocolError::InvalidArgument(
+                        "my_receiver_address not found".to_string(),
+                    )
+                })?);
                 ss.alice_addresses = Some(list.join(","));
                 flag = 4;
             }
@@ -542,7 +610,11 @@ impl KeyChatSessionStore {
                 .bind(session.device)
                 .execute(&self.pool.db)
                 .await
-                .expect("execute update_session alice sql error");
+                .map_err(|e| {
+                    SignalProtocolError::InvalidArgument(
+                        format_err!("execute update_session error: {}", e).to_string(),
+                    )
+                })?;
         } else {
             let sql = format!("update {} set bobSenderRatchetKey = ?, bobAddress = ?, record = ? where address = ? and device = ?", self.pool.definition_session());
             sqlx::query(&sql)
@@ -553,7 +625,11 @@ impl KeyChatSessionStore {
                 .bind(session.device)
                 .execute(&self.pool.db)
                 .await
-                .expect("execute update_session bob sql error");
+                .map_err(|e| {
+                    SignalProtocolError::InvalidArgument(
+                        format_err!("execute update_session error: {}", e).to_string(),
+                    )
+                })?;
         }
         Ok(())
     }
@@ -575,40 +651,52 @@ impl KeyChatSessionStore {
             sqlx::query(&sql)
                 .bind(address.name())
                 .bind(address.device_id().to_string())
-                .bind(hex::encode(
-                    record.serialize().expect("record serialize error"),
-                ))
+                .bind(hex::encode(record.serialize().map_err(|_| {
+                    SignalProtocolError::InvalidArgument("record serialize error".to_string())
+                })?))
                 .execute(&self.pool.db)
                 .await
-                .expect("execute insert_session sql error");
+                .map_err(|e| {
+                    SignalProtocolError::InvalidArgument(
+                        format_err!("execute insert_session error: {}", e).to_string(),
+                    )
+                })?;
         }
         if my_receiver_address.is_some() {
             let sql = format!("INSERT INTO {} (address, device, record, aliceSenderRatchetKey, aliceAddresses)  values (?, ?, ?, ?, ?)", self.pool.definition_session());
             sqlx::query(&sql)
                 .bind(address.name())
                 .bind(address.device_id().to_string())
-                .bind(hex::encode(
-                    record.serialize().expect("record serialize error"),
-                ))
+                .bind(hex::encode(record.serialize().map_err(|_| {
+                    SignalProtocolError::InvalidArgument("record serialize error".to_string())
+                })?))
                 .bind(sender_ratchet_key)
                 .bind(my_receiver_address)
                 .execute(&self.pool.db)
                 .await
-                .expect("execute insert_session alice sql error");
+                .map_err(|e| {
+                    SignalProtocolError::InvalidArgument(
+                        format_err!("execute insert_session error: {}", e).to_string(),
+                    )
+                })?;
         }
         if to_receiver_address.is_some() {
             let sql = format!("INSERT INTO {} (address, device, record, bobSenderRatchetKey, bobAddress)  values (?, ?, ?, ?, ?)", self.pool.definition_session());
             sqlx::query(&sql)
                 .bind(address.name())
                 .bind(address.device_id().to_string())
-                .bind(hex::encode(
-                    record.serialize().expect("record serialize error"),
-                ))
+                .bind(hex::encode(record.serialize().map_err(|_| {
+                    SignalProtocolError::InvalidArgument("record serialize error".to_string())
+                })?))
                 .bind(sender_ratchet_key)
                 .bind(to_receiver_address)
                 .execute(&self.pool.db)
                 .await
-                .expect("execute insert_session bob sql error");
+                .map_err(|e| {
+                    SignalProtocolError::InvalidArgument(
+                        format_err!("execute insert_session error: {}", e).to_string(),
+                    )
+                })?;
         }
 
         Ok(())
@@ -625,16 +713,24 @@ impl KeyChatSessionStore {
             .bind(device_id)
             .fetch_optional(&self.pool.db)
             .await
-            .expect("execute get_session sql error");
+            .map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute get_session error: {}", e).to_string(),
+                )
+            })?;
 
         if result.is_none() {
             return Ok(None);
         }
-        let row = result.expect("get session result error");
+        let row = result.unwrap();
         let session = SignalSession {
             alice_sender_ratchet_key: row.get(0),
             address: row.get(1),
-            device: u32::try_from(row.get::<'_, i64, _>(2)).expect("get device error"),
+            device: u32::try_from(row.get::<'_, i64, _>(2)).map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute get device from session error: {}", e).to_string(),
+                )
+            })?,
             record: row.get(3),
             bob_sender_ratchet_key: row.get(4),
             bob_address: row.get(5),
@@ -652,7 +748,7 @@ impl KeyChatSessionStore {
         let mut alice_addrs = Vec::new();
 
         while let Some(it) = iter.next().await {
-            let it = it.expect("get aliceAddresses row error");
+            let it = it.unwrap();
             let address = it.get::<'_, Option<String>, _>(0);
             if let Some(address) = address {
                 alice_addrs.push(address)
@@ -672,12 +768,16 @@ impl KeyChatSessionStore {
             .bind(device_id)
             .fetch_optional(&self.pool.db)
             .await
-            .expect("execute get_alice_addrs_by_identity sql error");
+            .map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute get_alice_addrs_by_identity error: {}", e).to_string(),
+                )
+            })?;
         let mut alice_addrs = Vec::new();
         if result.is_none() {
             return Ok(alice_addrs);
         }
-        let row = result.expect("get alice_addrs error");
+        let row = result.unwrap();
 
         let address = row.get::<'_, Option<String>, _>(0);
         // aliceAddresses is hex binary combine
@@ -697,15 +797,23 @@ impl KeyChatSessionStore {
             .bind(sub_address)
             .fetch_optional(&self.pool.db)
             .await
-            .expect("execute session_contain_alice_addr sql error");
+            .map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute session_contain_alice_addr error: {}", e).to_string(),
+                )
+            })?;
         if result.is_none() {
             return Ok(None);
         }
-        let row = result.expect("get session_contain_alice_addr result error");
+        let row = result.unwrap();
         let session = SignalSession {
             alice_sender_ratchet_key: row.get(0),
             address: row.get(1),
-            device: u32::try_from(row.get::<'_, i64, _>(3)).expect("get device error"),
+            device: u32::try_from(row.get::<'_, i64, _>(3)).map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute get device from session error: {}", e).to_string(),
+                )
+            })?,
             record: row.get(3),
             bob_sender_ratchet_key: row.get(4),
             bob_address: row.get(5),
@@ -731,7 +839,11 @@ impl KeyChatSessionStore {
             .bind(device_id)
             .execute(&self.pool.db)
             .await
-            .expect("execute update_alice_addr sql error");
+            .map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute update_alice_addr error: {}", e).to_string(),
+                )
+            })?;
         let cnt = result.rows_affected();
         if cnt > 0 {
             Ok(true)
@@ -754,7 +866,11 @@ impl KeyChatSessionStore {
                 .bind(device_id)
                 .execute(&self.pool.db)
                 .await
-                .expect("execute delete_session sql error");
+                .map_err(|e| {
+                    SignalProtocolError::InvalidArgument(
+                        format_err!("execute delete_session error: {}", e).to_string(),
+                    )
+                })?;
             let cnt = result.rows_affected();
             if cnt > 0 {
                 return Ok(true);
@@ -774,7 +890,11 @@ impl KeyChatSessionStore {
             .bind(device_id)
             .execute(&self.pool.db)
             .await
-            .expect("execute delete_session_by_device_id sql error");
+            .map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute delete_session_by_device_id error: {}", e).to_string(),
+                )
+            })?;
         let cnt = result.rows_affected();
         if cnt > 0 {
             Ok(true)
@@ -790,13 +910,15 @@ impl KeyChatSessionStore {
         let name = address.name();
         let device_id = &address.device_id().to_string();
         let session = self.get_session(name, device_id).await?;
-        if session.is_some() {
-            let record = session.expect("get session record error").record;
-            let record_vec: Vec<u8> = decode_str_to_bytes(&record).expect("serde record error");
-            let record = SessionRecord::deserialize(&record_vec)?;
-            Ok(Some(record))
-        } else {
-            Ok(None)
+        match session {
+            Some(session) => {
+                let record_vec = decode_str_to_bytes(&session.record).map_err(|e| {
+                    SignalProtocolError::InvalidArgument(format!("serde record error: {}", e))
+                })?;
+                let record = SessionRecord::deserialize(&record_vec)?;
+                Ok(Some(record))
+            }
+            None => Ok(None),
         }
     }
 
@@ -813,14 +935,15 @@ impl KeyChatSessionStore {
         }
         // CIPHERTEXT_MESSAGE_CURRENT_VERSION is 3
         let ciphertext_message_current_version = 3;
-        let session_record = session_record.expect("get session record error");
+        let session_record = session_record.unwrap();
         let flag = session_record
             .has_usable_sender_chain(SystemTime::now())
-            .expect("get has_usable_sender_chain error")
-            && session_record
-                .session_version()
-                .expect("get session version error")
-                == ciphertext_message_current_version;
+            .map_err(|_| {
+                SignalProtocolError::InvalidArgument("session_record not found".to_string())
+            })?
+            && session_record.session_version().map_err(|_| {
+                SignalProtocolError::InvalidArgument("session_version not found".to_string())
+            })? == ciphertext_message_current_version;
         Ok(flag)
     }
 }
@@ -870,16 +993,24 @@ impl KeyChatRatchetKeyStore {
             .bind(ratchet_key)
             .fetch_optional(&self.pool.db)
             .await
-            .expect("execute get_ratchet_key_by_public sql error");
+            .map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute get_ratchet_key_by_public error: {}", e).to_string(),
+                )
+            })?;
         if result.is_none() {
             return Ok(None);
         }
-        let row = result.expect("get_ratchet_key_by_public result error");
+        let row = result.unwrap();
         let ratchet_key = SignalRatchetKey {
             alice_ratchet_key_public: row.get(0),
             address: row.get(1),
             device: row.get::<'_, i64, _>(2).to_string(),
-            room_id: u32::try_from(row.get::<'_, i64, _>(3)).expect("get room_id error"),
+            room_id: u32::try_from(row.get::<'_, i64, _>(3)).map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("get room_id from ratchet error: {}", e).to_string(),
+                )
+            })?,
             bob_ratchet_key_private: row.get(4),
             ratchet_key_hash: row.get(5),
         };
@@ -899,7 +1030,11 @@ impl KeyChatRatchetKeyStore {
             .bind(&ratchet_key.ratchet_key_hash)
             .execute(&self.pool.db)
             .await
-            .expect("execute insert_ratchet_key sql error");
+            .map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute insert_ratchet_key error: {}", e).to_string(),
+                )
+            })?;
 
         Ok(())
     }
@@ -913,7 +1048,11 @@ impl KeyChatRatchetKeyStore {
             .bind(ratchet_key)
             .execute(&self.pool.db)
             .await
-            .expect("execute delete_by_ratchet_key sql error");
+            .map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute delete_by_ratchet_key error: {}", e).to_string(),
+                )
+            })?;
         let cnt = result.rows_affected();
         if cnt > 0 {
             info!(
@@ -936,7 +1075,11 @@ impl KeyChatRatchetKeyStore {
             .bind(id)
             .execute(&self.pool.db)
             .await
-            .expect("execute delete_by_address_id sql error");
+            .map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute delete_by_address_id error: {}", e).to_string(),
+                )
+            })?;
         let cnt = result.rows_affected();
         if cnt > 0 {
             info!(
@@ -957,11 +1100,15 @@ impl KeyChatRatchetKeyStore {
             .bind(room_id)
             .fetch_optional(&self.pool.db)
             .await
-            .expect("execute get_max_id_bak sql error");
+            .map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute get_max_id error: {}", e).to_string(),
+                )
+            })?;
         if result.is_none() {
             return Ok(None);
         }
-        let row = result.expect("get_max_id result error");
+        let row = result.unwrap();
         let id = row.get(0);
         // let id = match id {
         //     Ok(id) => {
@@ -979,7 +1126,9 @@ impl KeyChatRatchetKeyStore {
             .get_ratchet_key_by_public(&their_ephemeral_public)
             .await?;
         let private = ratchet_key
-            .expect("load_ratchet_key_bak get ratchet_key err.")
+            .ok_or_else(|| {
+                SignalProtocolError::InvalidArgument("ratchet_key not found".to_string())
+            })?
             .bob_ratchet_key_private;
         Ok(private)
     }
@@ -1031,7 +1180,7 @@ impl RatchetKeyStore for KeyChatRatchetKeyStore {
         their_ephemeral_public: String,
         our_ephemeral_private: String,
     ) -> Result<()> {
-        futures::executor::block_on(async move {
+        futures::executor::block_on(async {
             self.store_ratchet_key_bak(
                 address,
                 room_id,
@@ -1039,10 +1188,7 @@ impl RatchetKeyStore for KeyChatRatchetKeyStore {
                 our_ephemeral_private,
             )
             .await
-            .expect("func [store_ratchet_key] error");
-        });
-
-        Ok(())
+        })
     }
     /// delete_old_ratchet_key
     async fn delete_old_ratchet_key(&self, id: u32, address: String, room_id: u32) -> Result<()> {
@@ -1051,11 +1197,8 @@ impl RatchetKeyStore for KeyChatRatchetKeyStore {
     }
     /// get_max_id
     async fn get_max_id(&self, address: &ProtocolAddress, room_id: u32) -> Result<Option<u32>> {
-        let max_id = self
-            .get_max_id_bak(address.name(), room_id)
-            .await?
-            .expect("get max id error");
-        Ok(Some(max_id))
+        let max_id = self.get_max_id_bak(address.name(), room_id).await?;
+        Ok(max_id)
     }
     /// contains_ratchet_key, do not use
     async fn contains_ratchet_key(&self, _their_ephemeral_public: String) -> Result<Option<bool>> {
@@ -1125,14 +1268,22 @@ impl KeyChatSignedPreKeyStore {
             "select used, record from {} where keyId = ? order by id desc limit 1",
             self.pool.definition_signed_key()
         );
-        let result = sqlx::query(&sql)
+        let row = sqlx::query(&sql)
             .bind(key_id.to_string())
             .fetch_optional(&self.pool.db)
             .await
-            .expect("execute get_signed_pre_key sql error");
-        let row = result.expect("get signed record error");
+            .map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute get_signed_pre_key error: {}", e).to_string(),
+                )
+            })?
+            .ok_or_else(|| {
+                SignalProtocolError::InvalidArgument("signed_pre_key not found".to_string())
+            })?;
         let record: String = row.get(1);
-        let record_vec: Vec<u8> = decode_str_to_bytes(&record).expect("serde record error");
+        let record_vec: Vec<u8> = decode_str_to_bytes(&record).map_err(|e| {
+            SignalProtocolError::InvalidArgument(format!("record deserialize error: {}", e))
+        })?;
         let signed_record = SignedPreKeyRecord::deserialize(&record_vec)?;
         Ok(signed_record)
     }
@@ -1146,13 +1297,19 @@ impl KeyChatSignedPreKeyStore {
             "INSERT INTO {} (keyId, record) values (?, ?)",
             self.pool.definition_signed_key()
         );
-        let record_to_str = hex::encode(record.serialize().expect("record serialize error"));
+        let record_to_str = hex::encode(record.serialize().map_err(|_| {
+            SignalProtocolError::InvalidArgument("record serialize error".to_string())
+        })?);
         sqlx::query(&sql)
             .bind(&key_id.to_string())
             .bind(&record_to_str)
             .execute(&self.pool.db)
             .await
-            .expect("execute save_signed_pre_key sql error");
+            .map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute save_signed_pre_key error: {}", e).to_string(),
+                )
+            })?;
         Ok(())
     }
 
@@ -1169,7 +1326,11 @@ impl KeyChatSignedPreKeyStore {
             .bind(key_id.to_string())
             .execute(&self.pool.db)
             .await
-            .expect("execute remove_signed_pre_key sql error");
+            .map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute remove_signed_pre_key error: {}", e).to_string(),
+                )
+            })?;
 
         let cnt = result.rows_affected();
         if cnt > 0 {
@@ -1186,7 +1347,7 @@ impl KeyChatSignedPreKeyStore {
             let mut key_ids = Vec::new();
             let mut iter = sqlx::query(&sql).fetch(&self.pool.db);
             while let Some(it) = iter.next().await {
-                let it = it.expect("get iter next error");
+                let it = it.unwrap();
                 let id: u32 = it.get(0);
                 key_ids.push(SignedPreKeyId::from(id));
             }
@@ -1209,7 +1370,7 @@ impl KeyChatSignedPreKeyStore {
         // get current Unix timestamp
         let unix_timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
+            .unwrap()
             .as_secs();
         let record = SignedPreKeyRecord::new(
             bob_sign_id.into(),
@@ -1236,7 +1397,12 @@ impl KeyChatSignedPreKeyStore {
         let result = sqlx::query(&sql)
             .execute(&self.pool.db)
             .await
-            .expect("execute delete_old_signed_pre_key sql error");
+            .map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute delete_old_signed_pre_key error: {}", e).to_string(),
+                )
+            })?;
+
         let cnt = result.rows_affected();
         if cnt > 0 {
             info!("delete {} old delete_old_signed_pre_key records", cnt);
@@ -1269,14 +1435,20 @@ pub struct KeyChatPreKeyStore {
 impl KeyChatPreKeyStore {
     async fn get_pre_key(&self, key_id: PreKeyId) -> Result<PreKeyRecord> {
         let sql = format!("select used, record, strftime('%s', createdAt) as int_time from {} where keyId = ? order by id desc limit 1", self.pool.definition_pre_key());
-        let result = sqlx::query(&sql)
+        let row = sqlx::query(&sql)
             .bind(key_id.to_string())
             .fetch_optional(&self.pool.db)
             .await
-            .expect("execute get_pre_key sql error");
-        let row = result.expect("get prekey record error");
+            .map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute get_pre_key error: {}", e).to_string(),
+                )
+            })?
+            .ok_or_else(|| SignalProtocolError::InvalidArgument("pre_key not found".to_string()))?;
         let record: String = row.get(1);
-        let record_vec: Vec<u8> = decode_str_to_bytes(&record).expect("serde record error");
+        let record_vec: Vec<u8> = decode_str_to_bytes(&record).map_err(|e| {
+            SignalProtocolError::InvalidArgument(format!("record deserialize error: {}", e))
+        })?;
         let prekey_record = PreKeyRecord::deserialize(&record_vec)?;
         Ok(prekey_record)
     }
@@ -1286,13 +1458,19 @@ impl KeyChatPreKeyStore {
             "INSERT INTO {} (keyId, record) values (?, ?)",
             self.pool.definition_pre_key()
         );
-        let record_to_str = hex::encode(record.serialize().expect("record serialize error"));
+        let record_to_str = hex::encode(record.serialize().map_err(|_| {
+            SignalProtocolError::InvalidArgument("record serialize error".to_string())
+        })?);
         sqlx::query(&sql)
             .bind(&key_id.to_string())
             .bind(&record_to_str)
             .execute(&self.pool.db)
             .await
-            .expect("execute save_pre_key sql error");
+            .map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute save_pre_key error: {}", e).to_string(),
+                )
+            })?;
         Ok(())
     }
 
@@ -1310,7 +1488,11 @@ impl KeyChatPreKeyStore {
             .bind(key_id.to_string())
             .execute(&self.pool.db)
             .await
-            .expect("execute remove_pre_key sql error");
+            .map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute remove_pre_key error: {}", e).to_string(),
+                )
+            })?;
         let cnt = result.rows_affected();
         if cnt > 0 {
             info!("update {} old pre_key records used", cnt);
@@ -1326,7 +1508,7 @@ impl KeyChatPreKeyStore {
             let mut key_ids = Vec::new();
             let mut iter = sqlx::query(&sql).fetch(&self.pool.db);
             while let Some(it) = iter.next().await {
-                let it = it.expect("get iter next error");
+                let it = it.unwrap();
                 let id: u32 = it.get(0);
                 key_ids.push(PreKeyId::from(id));
             }
@@ -1344,7 +1526,11 @@ impl KeyChatPreKeyStore {
         let result = sqlx::query(&sql)
             .execute(&self.pool.db)
             .await
-            .expect("execute delete_old_pre_key sql error");
+            .map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute delete_old_pre_key error: {}", e).to_string(),
+                )
+            })?;
         let cnt = result.rows_affected();
         if cnt > 0 {
             info!("delete {} old pre_key records", cnt);
