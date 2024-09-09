@@ -748,7 +748,7 @@ impl KeyChatSessionStore {
         let mut alice_addrs = Vec::new();
 
         while let Some(it) = iter.next().await {
-            let it = it.unwrap();
+            let it = it.map_err(|e| SignalProtocolError::InvalidArgument(format!("get_all_alice_addrs fetch error“: {}", e)))?;
             let address = it.get::<'_, Option<String>, _>(0);
             if let Some(address) = address {
                 alice_addrs.push(address)
@@ -1252,7 +1252,7 @@ impl KeyChatKyberPreKeyStore {
     }
 
     /// Returns all registered Kyber pre-key ids
-    pub fn all_kyber_pre_key_ids(&self) -> impl Iterator<Item = &KyberPreKeyId> {
+    pub async fn all_kyber_pre_key_ids(&self) -> impl Iterator<Item = &KyberPreKeyId> {
         self.kyber_pre_keys.keys()
     }
 }
@@ -1366,19 +1366,26 @@ impl KeyChatSignedPreKeyStore {
     }
 
     /// Returns all registered signed pre-key ids
-    pub fn all_signed_pre_key_ids(&self) -> Result<Vec<SignedPreKeyId>> {
+    pub async fn all_signed_pre_key_ids(&self) -> Result<Vec<SignedPreKeyId>> {
         let sql = format!("select keyId from {}", self.pool.definition_signed_key());
 
-        let key_ids = futures::executor::block_on(async move {
-            let mut key_ids = Vec::new();
-            let mut iter = sqlx::query(&sql).fetch(&self.pool.db);
-            while let Some(it) = iter.next().await {
-                let it = it.unwrap();
-                let id: u32 = it.get(0);
-                key_ids.push(SignedPreKeyId::from(id));
-            }
-            key_ids
-        });
+        // let key_ids = futures::executor::block_on(async move {
+        //     let mut key_ids = Vec::new();
+        //     let mut iter = sqlx::query(&sql).fetch(&self.pool.db);
+        //     while let Some(it) = iter.next().await {
+        //         let it = it.ok_or_else(|e| SignalProtocolError::InvalidArgument(format!("all_signed_pre_key_ids fetch error: {}", e)))?;
+        //         let id: u32 = it.get(0);
+        //         key_ids.push(SignedPreKeyId::from(id));
+        //     }
+        //     key_ids
+        // });
+        let mut key_ids = Vec::new();
+        let mut iter = sqlx::query(&sql).fetch(&self.pool.db);
+        while let Some(it) = iter.next().await {
+            let it = it.map_err(|e| SignalProtocolError::InvalidArgument(format!("all_signed_pre_key_ids fetch error: {}", e)))?;
+            let id: u32 = it.get(0);
+            key_ids.push(SignedPreKeyId::from(id));
+        }
         Ok(key_ids)
     }
 
@@ -1527,19 +1534,26 @@ impl KeyChatPreKeyStore {
     }
 
     /// Returns all registered signed pre-key ids
-    pub fn all_pre_key_ids(&self) -> Result<Vec<PreKeyId>> {
+    pub async fn all_pre_key_ids(&self) -> Result<Vec<PreKeyId>> {
         let sql = format!("select keyId from {}", self.pool.definition_pre_key());
 
-        let key_ids = futures::executor::block_on(async move {
-            let mut key_ids = Vec::new();
-            let mut iter = sqlx::query(&sql).fetch(&self.pool.db);
-            while let Some(it) = iter.next().await {
-                let it = it.unwrap();
-                let id: u32 = it.get(0);
-                key_ids.push(PreKeyId::from(id));
-            }
-            key_ids
-        });
+        // let key_ids = futures::executor::block_on(async move {
+            // let mut key_ids = Vec::new();
+            // let mut iter = sqlx::query(&sql).fetch(&self.pool.db);
+            // while let Some(it) = iter.next().await {
+            //     let it = it.unwrap();
+            //     let id: u32 = it.get(0);
+            //     key_ids.push(PreKeyId::from(id));
+            // }
+            // key_ids
+        // });
+        let mut key_ids = Vec::new();
+        let mut iter = sqlx::query(&sql).fetch(&self.pool.db);
+        while let Some(it) = iter.next().await {
+            let it = it.map_err(|e| SignalProtocolError::InvalidArgument(format!("all_pre_key_ids fetch error: {}", e)))?;
+            let id: u32 = it.get(0);
+            key_ids.push(PreKeyId::from(id));
+        };
         Ok(key_ids)
     }
 
@@ -1633,18 +1647,18 @@ impl KeyChatSignalProtocolStore {
         Ok(self.identity_store.clone())
     }
     /// Returns all registered pre-key ids
-    pub fn all_pre_key_ids(&self) -> Result<Vec<PreKeyId>> {
-        self.pre_key_store.all_pre_key_ids()
+    pub async fn all_pre_key_ids(&self) -> Result<Vec<PreKeyId>> {
+        self.pre_key_store.all_pre_key_ids().await
     }
 
     /// Returns all registered signed pre-key ids
-    pub fn all_signed_pre_key_ids(&self) -> Result<Vec<SignedPreKeyId>> {
-        self.signed_pre_key_store.all_signed_pre_key_ids()
+    pub async fn all_signed_pre_key_ids(&self) -> Result<Vec<SignedPreKeyId>> {
+        self.signed_pre_key_store.all_signed_pre_key_ids().await
     }
 
     /// Returns all registered Kyber pre-key ids
-    pub fn all_kyber_pre_key_ids(&self) -> impl Iterator<Item = &KyberPreKeyId> {
-        self.kyber_pre_key_store.all_kyber_pre_key_ids()
+    pub async fn all_kyber_pre_key_ids(&self) -> impl Iterator<Item = &KyberPreKeyId> {
+        self.kyber_pre_key_store.all_kyber_pre_key_ids().await
     }
 }
 
