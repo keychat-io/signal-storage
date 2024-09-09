@@ -1166,29 +1166,55 @@ impl KeyChatRatchetKeyStore {
 #[async_trait(?Send)]
 impl RatchetKeyStore for KeyChatRatchetKeyStore {
     /// use load_ratchet_key_bak instead
-    fn load_ratchet_key(&self, their_ephemeral_public: String) -> Result<String> {
-        let ratchet_key = futures::executor::block_on(async move {
-            self.load_ratchet_key_bak(their_ephemeral_public).await
-        });
-        ratchet_key
+    async fn load_ratchet_key(&self, their_ephemeral_public: String) -> Result<String> {
+        // let ratchet_key = futures::executor::block_on(async move {
+        //     self.load_ratchet_key_bak(their_ephemeral_public).await
+        // });
+        // ratchet_key
+        self.load_ratchet_key_bak(their_ephemeral_public).await
     }
     /// use store_ratchet_key_bak instead
-    fn store_ratchet_key(
+    async fn store_ratchet_key(
         &mut self,
         address: &ProtocolAddress,
         room_id: u32,
         their_ephemeral_public: String,
         our_ephemeral_private: String,
     ) -> Result<()> {
-        futures::executor::block_on(async {
-            self.store_ratchet_key_bak(
-                address,
-                room_id,
-                their_ephemeral_public,
-                our_ephemeral_private,
-            )
-            .await
-        })
+        // let (mp, mc) = flume::bounded(0);
+
+        // let address = address.clone();
+        // let room_id = room_id.clone();
+        // let mut self_clone = self.clone();
+        // let _res = tokio::spawn(async move {
+        //     let r = self_clone.store_ratchet_key_bak(
+        //         &address,
+        //         room_id,
+        //         their_ephemeral_public,
+        //         our_ephemeral_private,
+        //     )
+        //     .await;
+
+        //     mp.send(r).expect("Send error");
+        // });
+        // mc.recv().unwrap().expect("Accept error");
+        // Ok(())
+        // //     self.store_ratchet_key_bak(
+        // //         address,
+        // //         room_id,
+        // //         their_ephemeral_public,
+        // //         our_ephemeral_private,
+        // //     )
+        // //     .await
+        // // })
+        self.store_ratchet_key_bak(
+            address,
+            room_id,
+            their_ephemeral_public,
+            our_ephemeral_private,
+        )
+        .await?;
+        Ok(())
     }
     /// delete_old_ratchet_key
     async fn delete_old_ratchet_key(&self, id: u32, address: String, room_id: u32) -> Result<()> {
@@ -1684,24 +1710,27 @@ impl SessionStore for KeyChatSignalProtocolStore {
 
 #[async_trait(?Send)]
 impl RatchetKeyStore for KeyChatSignalProtocolStore {
-    fn load_ratchet_key(&self, their_ephemeral_public: String) -> Result<String> {
+    async fn load_ratchet_key(&self, their_ephemeral_public: String) -> Result<String> {
         self.ratchet_key_store
             .load_ratchet_key(their_ephemeral_public)
+            .await
     }
 
-    fn store_ratchet_key(
+    async fn store_ratchet_key(
         &mut self,
         address: &ProtocolAddress,
         room_id: u32,
         their_ephemeral_public: String,
         our_ephemeral_private: String,
     ) -> Result<()> {
-        self.ratchet_key_store.store_ratchet_key(
-            address,
-            room_id,
-            their_ephemeral_public,
-            our_ephemeral_private,
-        )
+        self.ratchet_key_store
+            .store_ratchet_key(
+                address,
+                room_id,
+                their_ephemeral_public,
+                our_ephemeral_private,
+            )
+            .await
     }
 
     async fn delete_old_ratchet_key(&self, id: u32, address: String, room_id: u32) -> Result<()> {
