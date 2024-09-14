@@ -1421,10 +1421,10 @@ impl KeyChatSignedPreKeyStore {
         ))
     }
 
-    /// del over 24*3h signed_key
+    /// del over 24*7h signed_key
     pub async fn delete_old_signed_pre_key(&mut self) -> Result<()> {
         let sql = format!(
-            "delete from {} where createdAt <= datetime('now', '-1 day')",
+            "delete from {} where createdAt <= datetime('now', '-7 day')",
             self.pool.definition_signed_key()
         );
         let result = sqlx::query(&sql)
@@ -1557,10 +1557,10 @@ impl KeyChatPreKeyStore {
         Ok(key_ids)
     }
 
-    /// del over 24*3h pre_key
+    /// del over 24*7h pre_key
     pub async fn delete_old_pre_key(&mut self) -> Result<()> {
         let sql = format!(
-            "delete from {} where createdAt <= datetime('now', '-1 day')",
+            "delete from {} where createdAt <= datetime('now', '-7 day')",
             self.pool.definition_pre_key()
         );
         let result = sqlx::query(&sql)
