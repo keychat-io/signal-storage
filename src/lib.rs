@@ -1393,7 +1393,7 @@ impl KeyChatSignedPreKeyStore {
         &mut self,
         signal_identity_private_key: PrivateKey,
     ) -> Result<(u32, PublicKey, Vec<u8>, Vec<u8>)> {
-        // first del over 24*3h data
+        // first del over 24*7h data
         self.delete_old_signed_pre_key().await?;
         let bob_sign_id = random::<u32>();
         let mut csprng = OsRng;
@@ -1579,7 +1579,7 @@ impl KeyChatPreKeyStore {
     }
 
     pub async fn generate_pre_key(&mut self) -> Result<(u32, PublicKey, Vec<u8>)> {
-        // first del over 24*3 data
+        // first del over 24*7 data
         self.delete_old_pre_key().await?;
         let prekey_id = random::<u32>();
         let mut csprng = OsRng;
