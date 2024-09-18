@@ -748,7 +748,12 @@ impl KeyChatSessionStore {
         let mut alice_addrs = Vec::new();
 
         while let Some(it) = iter.next().await {
-            let it = it.map_err(|e| SignalProtocolError::InvalidArgument(format!("get_all_alice_addrs fetch error“: {}", e)))?;
+            let it = it.map_err(|e| {
+                SignalProtocolError::InvalidArgument(format!(
+                    "get_all_alice_addrs fetch error“: {}",
+                    e
+                ))
+            })?;
             let address = it.get::<'_, Option<String>, _>(0);
             if let Some(address) = address {
                 alice_addrs.push(address)
@@ -1382,7 +1387,12 @@ impl KeyChatSignedPreKeyStore {
         let mut key_ids = Vec::new();
         let mut iter = sqlx::query(&sql).fetch(&self.pool.db);
         while let Some(it) = iter.next().await {
-            let it = it.map_err(|e| SignalProtocolError::InvalidArgument(format!("all_signed_pre_key_ids fetch error: {}", e)))?;
+            let it = it.map_err(|e| {
+                SignalProtocolError::InvalidArgument(format!(
+                    "all_signed_pre_key_ids fetch error: {}",
+                    e
+                ))
+            })?;
             let id: u32 = it.get(0);
             key_ids.push(SignedPreKeyId::from(id));
         }
@@ -1393,7 +1403,7 @@ impl KeyChatSignedPreKeyStore {
         &mut self,
         signal_identity_private_key: PrivateKey,
     ) -> Result<(u32, PublicKey, Vec<u8>, Vec<u8>)> {
-        // first del over 24*3h data
+        // first del over 24*7h data
         self.delete_old_signed_pre_key().await?;
         let bob_sign_id = random::<u32>();
         let mut csprng = OsRng;
@@ -1538,22 +1548,24 @@ impl KeyChatPreKeyStore {
         let sql = format!("select keyId from {}", self.pool.definition_pre_key());
 
         // let key_ids = futures::executor::block_on(async move {
-            // let mut key_ids = Vec::new();
-            // let mut iter = sqlx::query(&sql).fetch(&self.pool.db);
-            // while let Some(it) = iter.next().await {
-            //     let it = it.unwrap();
-            //     let id: u32 = it.get(0);
-            //     key_ids.push(PreKeyId::from(id));
-            // }
-            // key_ids
+        // let mut key_ids = Vec::new();
+        // let mut iter = sqlx::query(&sql).fetch(&self.pool.db);
+        // while let Some(it) = iter.next().await {
+        //     let it = it.unwrap();
+        //     let id: u32 = it.get(0);
+        //     key_ids.push(PreKeyId::from(id));
+        // }
+        // key_ids
         // });
         let mut key_ids = Vec::new();
         let mut iter = sqlx::query(&sql).fetch(&self.pool.db);
         while let Some(it) = iter.next().await {
-            let it = it.map_err(|e| SignalProtocolError::InvalidArgument(format!("all_pre_key_ids fetch error: {}", e)))?;
+            let it = it.map_err(|e| {
+                SignalProtocolError::InvalidArgument(format!("all_pre_key_ids fetch error: {}", e))
+            })?;
             let id: u32 = it.get(0);
             key_ids.push(PreKeyId::from(id));
-        };
+        }
         Ok(key_ids)
     }
 
@@ -1579,7 +1591,7 @@ impl KeyChatPreKeyStore {
     }
 
     pub async fn generate_pre_key(&mut self) -> Result<(u32, PublicKey, Vec<u8>)> {
-        // first del over 24*3 data
+        // first del over 24*7 data
         self.delete_old_pre_key().await?;
         let prekey_id = random::<u32>();
         let mut csprng = OsRng;
