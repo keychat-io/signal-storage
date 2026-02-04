@@ -8,9 +8,7 @@ use futures_util::StreamExt;
 use libsignal_protocol::*;
 use log::info;
 use rand::random;
-use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 pub type Result<T> = std::result::Result<T, SignalProtocolError>;
 
@@ -138,6 +136,16 @@ impl LitePool {
     pub fn definition_pre_key(&self) -> &'static str {
         self.tables.pre_key
     }
+
+    #[inline]
+    pub fn definition_kyber_pre_key(&self) -> &'static str {
+        self.tables.kyber_pre_key
+    }
+
+    #[inline]
+    pub fn definition_kyber_singed_ids(&self) -> &'static str {
+        self.tables.kyber_singed_ids
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -147,6 +155,8 @@ pub struct Tables {
     session: &'static str,
     signed_key: &'static str,
     pre_key: &'static str,
+    kyber_pre_key: &'static str,
+    kyber_singed_ids: &'static str,
 }
 
 impl Default for Tables {
@@ -157,6 +167,8 @@ impl Default for Tables {
             session: "session",
             signed_key: "signed_key",
             pre_key: "pre_key",
+            kyber_pre_key: "kyber_pre_key",
+            kyber_singed_ids: "kyber_singed_ids",
         }
     }
 }
@@ -378,7 +390,7 @@ impl IdentityKeyStore for KeyChatIdentityKeyStore {
         &mut self,
         address: &ProtocolAddress,
         identity: &IdentityKey,
-    ) -> Result<bool> {
+    ) -> Result<IdentityChange> {
         let name = address.name();
         let device_id = address.device_id();
         let mut signal_identity = self
@@ -395,7 +407,7 @@ impl IdentityKeyStore for KeyChatIdentityKeyStore {
                 next_prekey_id: None,
             })
             .await?;
-            return Ok(false);
+            return Ok(IdentityChange::NewOrUnchanged);
         }
         // overwrite
         if self.get_identity_public_key(
@@ -417,10 +429,10 @@ impl IdentityKeyStore for KeyChatIdentityKeyStore {
                 SignalProtocolError::InvalidArgument("signal_identity not found".to_string())
             })?)
             .await?;
-            return Ok(true);
+            return Ok(IdentityChange::ReplacedExisting);
         }
         // same key
-        Ok(false)
+        Ok(IdentityChange::NewOrUnchanged)
     }
 
     async fn is_trusted_identity(
@@ -748,7 +760,12 @@ impl KeyChatSessionStore {
         let mut alice_addrs = Vec::new();
 
         while let Some(it) = iter.next().await {
-            let it = it.map_err(|e| SignalProtocolError::InvalidArgument(format!("get_all_alice_addrs fetch error“: {}", e)))?;
+            let it = it.map_err(|e| {
+                SignalProtocolError::InvalidArgument(format!(
+                    "get_all_alice_addrs fetch error“: {}",
+                    e
+                ))
+            })?;
             let address = it.get::<'_, Option<String>, _>(0);
             if let Some(address) = address {
                 alice_addrs.push(address)
@@ -937,7 +954,7 @@ impl KeyChatSessionStore {
         let ciphertext_message_current_version = 3;
         let session_record = session_record.unwrap();
         let flag = session_record
-            .has_usable_sender_chain(SystemTime::now())
+            .has_usable_sender_chain(SystemTime::now(), SessionUsabilityRequirements::empty())
             .map_err(|_| {
                 SignalProtocolError::InvalidArgument("session_record not found".to_string())
             })?
@@ -1240,31 +1257,192 @@ impl RatchetKeyStore for KeyChatRatchetKeyStore {
 /// Reference implementation of [traits::KyberPreKeyStore].
 #[derive(Clone)]
 pub struct KeyChatKyberPreKeyStore {
-    kyber_pre_keys: HashMap<KyberPreKeyId, KyberPreKeyRecord>,
+    pool: LitePool,
 }
 
 impl KeyChatKyberPreKeyStore {
-    /// new
-    pub fn new() -> Self {
-        Self {
-            kyber_pre_keys: HashMap::new(),
-        }
-    }
-
     /// Returns all registered Kyber pre-key ids
     pub async fn all_kyber_pre_key_ids(&self) -> impl Iterator<Item = &KyberPreKeyId> {
-        self.kyber_pre_keys.keys()
+        let ids = self.get_all_kyber_ids().await.unwrap_or_default();
+        let leaked: &'static [KyberPreKeyId] = Box::leak(ids.into_boxed_slice());
+        leaked.iter()
+    }
+
+    async fn get_all_kyber_ids(&self) -> Result<Vec<KyberPreKeyId>> {
+        let sql = format!("select keyId from {}", self.pool.definition_kyber_pre_key());
+        let mut key_ids = Vec::new();
+        let mut iter = sqlx::query(&sql).fetch(&self.pool.db);
+        while let Some(it) = iter.next().await {
+            let it = it.map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute get_all_kyber_ids error: {}", e).to_string(),
+                )
+            })?;
+            let id: u32 = it.get(0);
+            key_ids.push(KyberPreKeyId::from(id));
+        }
+        Ok(key_ids)
+    }
+
+    async fn get_kyber_pre_key(&self, key_id: KyberPreKeyId) -> Result<KyberPreKeyRecord> {
+        let sql = format!(
+            "select used, record from {} where keyId = ? order by id desc limit 1",
+            self.pool.definition_kyber_pre_key()
+        );
+        let row = sqlx::query(&sql)
+            .bind(key_id.to_string())
+            .fetch_optional(&self.pool.db)
+            .await
+            .map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute get_kyber_pre_key error: {}", e).to_string(),
+                )
+            })?
+            .ok_or_else(|| {
+                SignalProtocolError::InvalidArgument("kyber_pre_key not found".to_string())
+            })?;
+        let record: String = row.get(1);
+        let record_vec: Vec<u8> = decode_str_to_bytes(&record).map_err(|e| {
+            SignalProtocolError::InvalidArgument(format!("record deserialize error: {}", e))
+        })?;
+        let signed_record = KyberPreKeyRecord::deserialize(&record_vec)?;
+        Ok(signed_record)
+    }
+
+    async fn save_kyber_pre_key(
+        &mut self,
+        key_id: KyberPreKeyId,
+        record: &KyberPreKeyRecord,
+    ) -> Result<()> {
+        let sql = format!(
+            "INSERT INTO {} (keyId, record) values (?, ?)",
+            self.pool.definition_kyber_pre_key()
+        );
+        let record_to_str = hex::encode(record.serialize().map_err(|_| {
+            SignalProtocolError::InvalidArgument("record serialize error".to_string())
+        })?);
+        sqlx::query(&sql)
+            .bind(&key_id.to_string())
+            .bind(&record_to_str)
+            .execute(&self.pool.db)
+            .await
+            .map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute save_kyber_pre_key error: {}", e).to_string(),
+                )
+            })?;
+        Ok(())
+    }
+
+    // this need a new table to mark used base key for kyber+ec key pair
+    async fn mark_kyber_pre_key_used(
+        &mut self,
+        kyber_prekey_id: KyberPreKeyId,
+        ec_prekey_id: SignedPreKeyId,
+        base_key: &PublicKey,
+    ) -> Result<()> {
+        let base_key_str = hex::encode(base_key.serialize());
+
+        // Check if this base key has already been used for this kyber+ec key pair
+        let sql = format!(
+            "select 1 from {} where kyberId = ? and signedId = ? and baseKey = ? limit 1",
+            self.pool.definition_kyber_singed_ids()
+        );
+        let exists = sqlx::query(&sql)
+            .bind(kyber_prekey_id.to_string())
+            .bind(ec_prekey_id.to_string())
+            .bind(&base_key_str)
+            .fetch_optional(&self.pool.db)
+            .await
+            .map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute mark_kyber_pre_key_used check error: {}", e).to_string(),
+                )
+            })?;
+
+        if exists.is_some() {
+            return Err(SignalProtocolError::InvalidMessage(
+                CiphertextMessageType::PreKey,
+                "reused base key",
+            ));
+        }
+
+        // Insert the used base key record
+        let sql = format!(
+            "INSERT INTO {} (kyberId, signedId, baseKey) values (?, ?, ?)",
+            self.pool.definition_kyber_singed_ids()
+        );
+        sqlx::query(&sql)
+            .bind(kyber_prekey_id.to_string())
+            .bind(ec_prekey_id.to_string())
+            .bind(&base_key_str)
+            .execute(&self.pool.db)
+            .await
+            .map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute mark_kyber_pre_key_used insert error: {}", e).to_string(),
+                )
+            })?;
+
+        Ok(())
+    }
+
+    pub async fn generate_kyber_pre_key(
+        &mut self,
+        signal_identity_private_key: PrivateKey,
+    ) -> Result<(u32, kem::PublicKey, Vec<u8>, Vec<u8>)> {
+        // first del over 24*7h data
+        self.delete_old_kyber_pre_key().await?;
+        let bob_kyber_id = random::<u32>();
+        let pair = kem::KeyPair::generate(kem::KeyType::Kyber1024, &mut rand::rng());
+        let bob_kyber_pre_key_sig = signal_identity_private_key
+            .calculate_signature(&pair.public_key.serialize(), &mut rand::rng())?;
+        // get current Unix timestamp
+        let unix_timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let ts_mills = Timestamp::from_epoch_millis(unix_timestamp as u64);
+        let record =
+            KyberPreKeyRecord::new(bob_kyber_id.into(), ts_mills, &pair, &bob_kyber_pre_key_sig);
+
+        self.save_kyber_pre_key(bob_kyber_id.into(), &record)
+            .await?;
+        Ok((
+            bob_kyber_id,
+            pair.public_key,
+            bob_kyber_pre_key_sig.to_vec(),
+            record.serialize()?,
+        ))
+    }
+
+    /// del over 24*7h signed_key
+    pub async fn delete_old_kyber_pre_key(&mut self) -> Result<()> {
+        let sql = format!(
+            "delete from {} where createdAt <= datetime('now', '-7 day')",
+            self.pool.definition_kyber_pre_key()
+        );
+        let result = sqlx::query(&sql)
+            .execute(&self.pool.db)
+            .await
+            .map_err(|e| {
+                SignalProtocolError::InvalidArgument(
+                    format_err!("execute delete_old_kyber_pre_key error: {}", e).to_string(),
+                )
+            })?;
+
+        let cnt = result.rows_affected();
+        if cnt > 0 {
+            info!("delete {} old delete_old_kyber_pre_key records", cnt);
+        }
+        Ok(())
     }
 }
 
 #[async_trait(?Send)]
 impl KyberPreKeyStore for KeyChatKyberPreKeyStore {
     async fn get_kyber_pre_key(&self, kyber_prekey_id: KyberPreKeyId) -> Result<KyberPreKeyRecord> {
-        Ok(self
-            .kyber_pre_keys
-            .get(&kyber_prekey_id)
-            .ok_or(SignalProtocolError::InvalidKyberPreKeyId)?
-            .clone())
+        self.get_kyber_pre_key(kyber_prekey_id).await
     }
 
     async fn save_kyber_pre_key(
@@ -1272,13 +1450,17 @@ impl KyberPreKeyStore for KeyChatKyberPreKeyStore {
         kyber_prekey_id: KyberPreKeyId,
         record: &KyberPreKeyRecord,
     ) -> Result<()> {
-        self.kyber_pre_keys
-            .insert(kyber_prekey_id, record.to_owned());
-        Ok(())
+        self.save_kyber_pre_key(kyber_prekey_id, record).await
     }
 
-    async fn mark_kyber_pre_key_used(&mut self, _kyber_prekey_id: KyberPreKeyId) -> Result<()> {
-        Ok(())
+    async fn mark_kyber_pre_key_used(
+        &mut self,
+        kyber_prekey_id: KyberPreKeyId,
+        ec_prekey_id: SignedPreKeyId,
+        base_key: &PublicKey,
+    ) -> Result<()> {
+        self.mark_kyber_pre_key_used(kyber_prekey_id, ec_prekey_id, base_key)
+            .await
     }
 }
 
@@ -1382,7 +1564,12 @@ impl KeyChatSignedPreKeyStore {
         let mut key_ids = Vec::new();
         let mut iter = sqlx::query(&sql).fetch(&self.pool.db);
         while let Some(it) = iter.next().await {
-            let it = it.map_err(|e| SignalProtocolError::InvalidArgument(format!("all_signed_pre_key_ids fetch error: {}", e)))?;
+            let it = it.map_err(|e| {
+                SignalProtocolError::InvalidArgument(format!(
+                    "all_signed_pre_key_ids fetch error: {}",
+                    e
+                ))
+            })?;
             let id: u32 = it.get(0);
             key_ids.push(SignedPreKeyId::from(id));
         }
@@ -1396,21 +1583,17 @@ impl KeyChatSignedPreKeyStore {
         // first del over 24*7h data
         self.delete_old_signed_pre_key().await?;
         let bob_sign_id = random::<u32>();
-        let mut csprng = OsRng;
-        let pair = KeyPair::generate(&mut csprng);
+        let pair = KeyPair::generate(&mut rand::rng());
         let bob_signed_signature = signal_identity_private_key
-            .calculate_signature(&pair.public_key.serialize(), &mut OsRng)?;
+            .calculate_signature(&pair.public_key.serialize(), &mut rand::rng())?;
         // get current Unix timestamp
         let unix_timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_secs();
-        let record = SignedPreKeyRecord::new(
-            bob_sign_id.into(),
-            unix_timestamp,
-            &pair,
-            &bob_signed_signature,
-        );
+            .as_millis();
+        let ts_mills = Timestamp::from_epoch_millis(unix_timestamp as u64);
+        let record =
+            SignedPreKeyRecord::new(bob_sign_id.into(), ts_mills, &pair, &bob_signed_signature);
         self.save_signed_pre_key(bob_sign_id.into(), &record)
             .await?;
         Ok((
@@ -1538,22 +1721,24 @@ impl KeyChatPreKeyStore {
         let sql = format!("select keyId from {}", self.pool.definition_pre_key());
 
         // let key_ids = futures::executor::block_on(async move {
-            // let mut key_ids = Vec::new();
-            // let mut iter = sqlx::query(&sql).fetch(&self.pool.db);
-            // while let Some(it) = iter.next().await {
-            //     let it = it.unwrap();
-            //     let id: u32 = it.get(0);
-            //     key_ids.push(PreKeyId::from(id));
-            // }
-            // key_ids
+        // let mut key_ids = Vec::new();
+        // let mut iter = sqlx::query(&sql).fetch(&self.pool.db);
+        // while let Some(it) = iter.next().await {
+        //     let it = it.unwrap();
+        //     let id: u32 = it.get(0);
+        //     key_ids.push(PreKeyId::from(id));
+        // }
+        // key_ids
         // });
         let mut key_ids = Vec::new();
         let mut iter = sqlx::query(&sql).fetch(&self.pool.db);
         while let Some(it) = iter.next().await {
-            let it = it.map_err(|e| SignalProtocolError::InvalidArgument(format!("all_pre_key_ids fetch error: {}", e)))?;
+            let it = it.map_err(|e| {
+                SignalProtocolError::InvalidArgument(format!("all_pre_key_ids fetch error: {}", e))
+            })?;
             let id: u32 = it.get(0);
             key_ids.push(PreKeyId::from(id));
-        };
+        }
         Ok(key_ids)
     }
 
@@ -1582,8 +1767,7 @@ impl KeyChatPreKeyStore {
         // first del over 24*7 data
         self.delete_old_pre_key().await?;
         let prekey_id = random::<u32>();
-        let mut csprng = OsRng;
-        let pair = KeyPair::generate(&mut csprng);
+        let pair = KeyPair::generate(&mut rand::rng());
         let record = PreKeyRecord::new(prekey_id.into(), &pair);
         self.save_pre_key(prekey_id.into(), &record).await?;
         Ok((prekey_id, pair.public_key, record.serialize()?))
@@ -1637,7 +1821,7 @@ impl KeyChatSignalProtocolStore {
                 registration_id,
             },
             ratchet_key_store: KeyChatRatchetKeyStore { pool: pool.clone() },
-            kyber_pre_key_store: KeyChatKyberPreKeyStore::new(),
+            kyber_pre_key_store: KeyChatKyberPreKeyStore { pool: pool.clone() },
             signed_pre_key_store: KeyChatSignedPreKeyStore { pool: pool.clone() },
             pre_key_store: KeyChatPreKeyStore { pool: pool.clone() },
         })
@@ -1676,7 +1860,7 @@ impl IdentityKeyStore for KeyChatSignalProtocolStore {
         &mut self,
         address: &ProtocolAddress,
         identity: &IdentityKey,
-    ) -> Result<bool> {
+    ) -> Result<IdentityChange> {
         self.identity_store.save_identity(address, identity).await
     }
 
@@ -1820,9 +2004,14 @@ impl KyberPreKeyStore for KeyChatSignalProtocolStore {
             .await
     }
 
-    async fn mark_kyber_pre_key_used(&mut self, kyber_prekey_id: KyberPreKeyId) -> Result<()> {
+    async fn mark_kyber_pre_key_used(
+        &mut self,
+        kyber_prekey_id: KyberPreKeyId,
+        ec_prekey_id: SignedPreKeyId,
+        base_key: &PublicKey,
+    ) -> Result<()> {
         self.kyber_pre_key_store
-            .mark_kyber_pre_key_used(kyber_prekey_id)
+            .mark_kyber_pre_key_used(kyber_prekey_id, ec_prekey_id, base_key)
             .await
     }
 }
