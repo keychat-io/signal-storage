@@ -1576,7 +1576,7 @@ impl KeyChatSignedPreKeyStore {
         Ok(key_ids)
     }
 
-    pub async fn generate_signed_key(
+    pub async fn generate_signed_pre_key(
         &mut self,
         signal_identity_private_key: PrivateKey,
     ) -> Result<(u32, PublicKey, Vec<u8>, Vec<u8>)> {
